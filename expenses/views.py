@@ -4,6 +4,7 @@ from rest_framework.response import Response
 
 from .models import Category, Expense
 from .serializers import CategorySerializer, ExpenseSerializer
+from django.db.models import Sum
 
 
 @api_view(["GET", "POST"])
