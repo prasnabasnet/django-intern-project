@@ -14,7 +14,7 @@ from rest_framework.permissions import AllowAny
 from django.contrib.auth import authenticate
 from .services import send_discord_alert
 from datetime import date
-from django.db.models import Sum
+from django.db.models import Sum, Avg, Count, Max
 
 
 @api_view(["POST"])
@@ -227,3 +227,73 @@ def expense_export(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
+@api_view(["GET"])
+def expense_analytics(request):
+    try:
+        today = date.today()
+        expenses = Expense.objects.filter(user=request.user)
+
+        total_spent = expenses.aggregate(total=Sum("amount"))["total"] or 0
+
+        monthly_spent = expenses.filter(
+            date__year=today.year,
+            date__month=today.month
+        ).aggregate(total=Sum("amount"))["total"] or 0
+
+        avg_expense = expenses.aggregate(avg=Avg("amount"))["avg"] or 0
+
+        expense_count = expenses.count()
+
+        top_category = (
+            expenses.values("category__name")
+            .annotate(total=Sum("amount"))
+            .order_by("-total")
+            .first()
+        )
+
+        most_expensive = expenses.order_by("-amount").first()
+
+        last_six_months = []
+        for i in range(5, -1, -1):
+            month = today.month - i 
+            year = today.year
+            while month <= 0:
+                month += 12
+                year -= 1   
+
+            total = expenses.filter(
+                date__year=year,
+                date__month=month
+            ).aggregate(total=Sum("amount"))["total"] or 0
+
+            last_six_months.append(
+                {"month": f"{year}-{month:02d}", "total": round(float(total), 2)}
+            )
+            
+        last_expense = expenses.order_by("-date").first()
+        days_since_last = (today - last_expense.date).days if last_expense else None
+
+
+        return Response(
+            {
+                "total_spent": round(float(total_spent), 2),
+                "monthly_spent": round(float(monthly_spent), 2),
+                "avg_expense": round(float(avg_expense), 2),
+                "expense_count": expense_count,
+                "top_category": top_category["category__name"] if top_category else None,
+                "most_expensive_expense": {
+                    "title": most_expensive.title,
+                    "amount": most_expensive.amount,
+                    "currency": most_expensive.currency,
+                    "date": most_expensive.date,
+                } if most_expensive else None,
+                "spending_last_six_months": last_six_months,
+                "days_since_last_expense": days_since_last,
+            }
+        )
+
+    except Exception as e:
+        return Response(
+            {"error": "Failed to generate analytics.", "details": str(e)}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
