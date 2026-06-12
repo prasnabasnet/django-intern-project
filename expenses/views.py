@@ -1,8 +1,10 @@
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
+from django.http import HttpResponse
 import requests
 import os
+import csv
 
 from .models import Category, Expense
 from .serializers import CategorySerializer, ExpenseSerializer
@@ -197,3 +199,31 @@ def expense_summary(request):
         )
 
     
+@api_view(["GET"])
+def expense_export(request):
+    try:
+        response = HttpResponse(content_type="text/csv")
+        response["Content-Disposition"] = 'attachment; filename="expenses.csv"'
+
+        writer = csv.writer(response)
+        writer.writerow(["ID", "Title", "Amount", "Currency", "Category", "Date", "Notes"])
+
+        expenses = Expense.objects.filter(user=request.user).select_related("category")
+        for expense in expenses:
+            writer.writerow([
+                expense.id,
+                expense.title,
+                expense.amount,
+                expense.currency,
+                expense.category.name,
+                expense.date,
+                expense.notes
+            ])
+
+        return response
+    except Exception as e:
+        return Response(
+            {"error": "Failed to export expenses.", "details": str(e)}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
