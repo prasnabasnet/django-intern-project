@@ -1,10 +1,11 @@
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
+import requests
+import os
 
 from .models import Category, Expense
 from .serializers import CategorySerializer, ExpenseSerializer
-from django.db.models import Sum
 from django.contrib.auth.models import User
 from rest_framework.authtoken.models import Token
 from rest_framework.permissions import AllowAny
@@ -14,38 +15,52 @@ from django.contrib.auth import authenticate
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def register(request):
-    username = request.data.get("username")
-    password = request.data.get("password")
+    try:
+        username = (request.data.get("username") or "").lower().strip()
+        password = (request.data.get("password") or "").strip() 
 
-    if not username or not password:
-        return Response(
-            {"error": "Username and password are required."}, 
-            status=status.HTTP_400_BAD_REQUEST
-        )
-    if User.objects.filter(username=username).exists():
-        return Response(
-            {"error": "Username already exists."}, 
-            status=status.HTTP_400_BAD_REQUEST
-        )
+        if not username or not password:
+            return Response(
+                {"error": "Username and password are required."}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if User.objects.filter(username=username).exists():
+            return Response(
+                {"error": "Username already exists."}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        user = User.objects.create_user(username=username, password=password)
+        token, _ = Token.objects.get_or_create(user=user)
+
+        return Response({"token": token.key}, status=status.HTTP_201_CREATED)
     
-    user = User.objects.create_user(username=username, password=password)
-    token, _ = Token.objects.get_or_create(user=user)
-
-    return Response({"token": token.key}, status=status.HTTP_201_CREATED)
+    except Exception as e:
+        return Response(
+            {"error": "An error occurred during registration.", "details": str(e)}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def login(request):
-    username = request.data.get("username")
-    password = request.data.get("password")
-    user = authenticate(username=username, password=password)
-    if not user:
+    try:
+        username = (request.data.get("username") or "").lower().strip() 
+        password = (request.data.get("password") or "").strip()
+        user = authenticate(username=username, password=password)
+        if not user:
+            return Response(
+                {"error": "Invalid credentials."}, 
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        token, _ = Token.objects.get_or_create(user=user)
+        return Response({"token": token.key}, status=status.HTTP_200_OK)
+
+    except Exception as e:
         return Response(
-            {"error": "Invalid credentials."}, 
-            status=status.HTTP_400_BAD_REQUEST
+            {"error": "An error occurred during login.", "details": str(e)}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
-    token, _ = Token.objects.get_or_create(user=user)
-    return Response({"token": token.key}, status=status.HTTP_200_OK)
 
 
 @api_view(["GET", "POST"])
@@ -103,12 +118,54 @@ def expense_detail(request, pk):
     return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+def get_exchange_rates(base_currency):
+    try:
+        url = f"https://open.er-api.com/v6/latest/{base_currency}"
+        response = requests.get(url)
+        data = response.json()
+        return data["rates"], data["time_last_update_utc"]
+    except Exception as e:
+        raise Exception(f"Failed to fetch exchange rates: {str(e)}")
+
 @api_view(["GET"])
 def expense_summary(request):
-    summary = (
-        Expense.objects.filter(user=request.user)
-        .values("category__name")
-        .annotate(total=Sum("amount"))
-        .order_by("category__name")
-    )
-    return Response(list(summary))
+    try:
+        base_currency = os.getenv("BASE_CURRENCY", "USD")
+        rates, as_of = get_exchange_rates(base_currency)
+
+        expenses = Expense.objects.filter(user=request.user).values(
+            "category__name", "amount", "currency"
+        )
+
+        category_totals = {}
+        for expense in expenses:
+            cat = expense["category__name"]
+            amount = float(expense["amount"])
+            currency = expense["currency"]
+
+            if currency != base_currency:
+                rate = rates.get(currency, 1)
+                amount = amount / rate
+
+            if cat not in category_totals:
+                category_totals[cat] = 0
+            category_totals[cat] += amount
+
+        result = [
+            {"category": cat, "total": round(total, 2)}
+            for cat, total in category_totals.items()
+        ]
+
+        return Response({
+            "base_currency": base_currency,
+            "as_of": as_of,
+            "categories": result
+        })
+    
+    except Exception as e:
+        return Response(
+            {"error": "Failed to generate summary.", "details": str(e)}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+    
