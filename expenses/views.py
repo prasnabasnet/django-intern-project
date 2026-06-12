@@ -1,29 +1,70 @@
 from rest_framework import status
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 
 from .models import Category, Expense
 from .serializers import CategorySerializer, ExpenseSerializer
 from django.db.models import Sum
+from django.contrib.auth.models import User
+from rest_framework.authtoken.models import Token
+from rest_framework.permissions import AllowAny
+from django.contrib.auth import authenticate
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def register(request):
+    username = request.data.get("username")
+    password = request.data.get("password")
+
+    if not username or not password:
+        return Response(
+            {"error": "Username and password are required."}, 
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    if User.objects.filter(username=username).exists():
+        return Response(
+            {"error": "Username already exists."}, 
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    user = User.objects.create_user(username=username, password=password)
+    token, _ = Token.objects.get_or_create(user=user)
+
+    return Response({"token": token.key}, status=status.HTTP_201_CREATED)
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def login(request):
+    username = request.data.get("username")
+    password = request.data.get("password")
+    user = authenticate(username=username, password=password)
+    if not user:
+        return Response(
+            {"error": "Invalid credentials."}, 
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    token, _ = Token.objects.get_or_create(user=user)
+    return Response({"token": token.key}, status=status.HTTP_200_OK)
 
 
 @api_view(["GET", "POST"])
 def category_list(request):
     if request.method == "GET":
-        categories = Category.objects.all()
+        categories = Category.objects.filter(user=request.user)
         serializer = CategorySerializer(categories, many=True)
         return Response(serializer.data)
 
     serializer = CategorySerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
-    serializer.save()
+    serializer.save(user=request.user)
     return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 @api_view(["GET", "POST"])
 def expense_list(request):
     if request.method == "GET":
-        expenses = Expense.objects.all()
+        expenses = Expense.objects.filter(user=request.user)
 
         start_date = request.query_params.get("start_date")
         end_date = request.query_params.get("end_date")
@@ -37,14 +78,14 @@ def expense_list(request):
 
     serializer = ExpenseSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
-    serializer.save()
+    serializer.save(user=request.user)
     return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 @api_view(["GET", "PUT", "DELETE"])
 def expense_detail(request, pk):
     try:
-        expense = Expense.objects.get(pk=pk)
+        expense = Expense.objects.get(pk=pk, user=request.user)
     except Expense.DoesNotExist:
         return Response(status=status.HTTP_404_NOT_FOUND)
 
@@ -65,7 +106,8 @@ def expense_detail(request, pk):
 @api_view(["GET"])
 def expense_summary(request):
     summary = (
-        Expense.objects.values("category__name")
+        Expense.objects.filter(user=request.user)
+        .values("category__name")
         .annotate(total=Sum("amount"))
         .order_by("category__name")
     )
