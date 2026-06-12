@@ -10,13 +10,16 @@ from django.contrib.auth.models import User
 from rest_framework.authtoken.models import Token
 from rest_framework.permissions import AllowAny
 from django.contrib.auth import authenticate
+from .services import send_discord_alert
+from datetime import date
+from django.db.models import Sum
 
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def register(request):
     try:
-        username = (request.data.get("username") or "").lower().strip()
+        username = (request.data.get("username") or "").strip()
         password = (request.data.get("password") or "").strip() 
 
         if not username or not password:
@@ -45,7 +48,7 @@ def register(request):
 @permission_classes([AllowAny])
 def login(request):
     try:
-        username = (request.data.get("username") or "").lower().strip() 
+        username = (request.data.get("username") or "").strip() 
         password = (request.data.get("password") or "").strip()
         user = authenticate(username=username, password=password)
         if not user:
@@ -76,6 +79,28 @@ def category_list(request):
     return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
+def check_and_alert_budget(expense):
+    category = expense.category
+    if not category.monthly_limit:
+        return
+    
+    today =  date.today()
+    monthly_total = Expense.objects.filter(
+        category=category,
+        user=expense.user,
+        date__year=today.year,
+        date__month=today.month
+    ).aggregate(total=Sum("amount"))["total"] or 0
+
+    if monthly_total > category.monthly_limit:
+        message = (
+            f"Alert: You've exceeded your monthly budget for '{category.name}'!\n"
+            f"Total this month: {monthly_total} {expense.currency}\n"
+            f"Limit: {category.monthly_limit} {expense.currency}"
+        )
+        send_discord_alert(message)
+
+
 @api_view(["GET", "POST"])
 def expense_list(request):
     if request.method == "GET":
@@ -93,7 +118,8 @@ def expense_list(request):
 
     serializer = ExpenseSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
-    serializer.save(user=request.user)
+    expense = serializer.save(user=request.user)
+    check_and_alert_budget(expense)
     return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
@@ -111,7 +137,8 @@ def expense_detail(request, pk):
     if request.method == "PUT":
         serializer = ExpenseSerializer(expense, data=request.data)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        expense = serializer.save()
+        check_and_alert_budget(expense)
         return Response(serializer.data)
 
     expense.delete()
@@ -121,7 +148,8 @@ def expense_detail(request, pk):
 def get_exchange_rates(base_currency):
     try:
         url = f"https://open.er-api.com/v6/latest/{base_currency}"
-        response = requests.get(url)
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
         data = response.json()
         return data["rates"], data["time_last_update_utc"]
     except Exception as e:
