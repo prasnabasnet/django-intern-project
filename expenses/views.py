@@ -2,6 +2,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from django.http import HttpResponse
+from django.db import IntegrityError
 import requests
 import os
 import csv
@@ -22,7 +23,7 @@ from django.db.models import Sum, Avg, Count, Max
 def register(request):
     try:
         username = (request.data.get("username") or "").strip()
-        password = (request.data.get("password") or "").strip() 
+        password = (request.data.get("password") or "").strip()
 
         if not username or not password:
             return Response(
@@ -36,9 +37,7 @@ def register(request):
             )
 
         user = User.objects.create_user(username=username, password=password)
-        token, _ = Token.objects.get_or_create(user=user)
-
-        return Response({"token": token.key}, status=status.HTTP_201_CREATED)
+        return Response( status=status.HTTP_204_NO_CONTENT)
     
     except Exception as e:
         return Response(
@@ -52,6 +51,11 @@ def login(request):
     try:
         username = (request.data.get("username") or "").strip() 
         password = (request.data.get("password") or "").strip()
+        if not username or not password:
+            return Response(
+                {"error": "Username and password are required."}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
         user = authenticate(username=username, password=password)
         if not user:
             return Response(
@@ -70,59 +74,81 @@ def login(request):
 
 @api_view(["GET", "POST"])
 def category_list(request):
-    if request.method == "GET":
-        categories = Category.objects.filter(user=request.user)
-        serializer = CategorySerializer(categories, many=True)
-        return Response(serializer.data)
+    try:
+        if request.method == "GET":
+            categories = Category.objects.filter(user=request.user)
+            serializer = CategorySerializer(categories, many=True)
+            return Response(serializer.data)
 
-    serializer = CategorySerializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
-    serializer.save(user=request.user)
-    return Response(serializer.data, status=status.HTTP_201_CREATED)
+        serializer = CategorySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(user=request.user)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    except IntegrityError:
+        return Response(
+            {"error": "A category with this name already exists."}, 
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    except Exception as e:
+        return Response(
+            {"error": "An error occurred while processing the category.", "details": str(e)}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+            
 
 
 def check_and_alert_budget(expense):
-    category = expense.category
-    if not category.monthly_limit:
-        return
-    
-    today =  date.today()
-    monthly_total = Expense.objects.filter(
-        category=category,
-        user=expense.user,
-        date__year=today.year,
-        date__month=today.month
-    ).aggregate(total=Sum("amount"))["total"] or 0
+    try:
+        category = expense.category
+        if not category.monthly_limit:
+            return
+        
+        today =  date.today()
+        monthly_total = Expense.objects.filter(
+            category=category,
+            user=expense.user,
+            date__year=today.year,
+            date__month=today.month
+        ).aggregate(total=Sum("amount"))["total"] or 0
 
-    if monthly_total > category.monthly_limit:
-        message = (
-            f"Alert: You've exceeded your monthly budget for '{category.name}'!\n"
-            f"Total this month: {monthly_total} {expense.currency}\n"
-            f"Limit: {category.monthly_limit} {expense.currency}"
-        )
-        send_discord_alert(message)
+        if monthly_total > category.monthly_limit:
+            message = (
+                f"Alert: You've exceeded your monthly budget for '{category.name}'!\n"
+                f"Total this month: {monthly_total} {expense.currency}\n"
+                f"Limit: {category.monthly_limit} {expense.currency}"
+            )
+            send_discord_alert(message)
+    except Exception as e:
+        print(f"Failed to check budget: {str(e)}")
 
 
 @api_view(["GET", "POST"])
 def expense_list(request):
-    if request.method == "GET":
-        expenses = Expense.objects.filter(user=request.user)
+    try:
+        if request.method == "GET":
+            expenses = Expense.objects.filter(user=request.user)
 
-        start_date = request.query_params.get("start_date")
-        end_date = request.query_params.get("end_date")
-        if start_date:
-            expenses = expenses.filter(date__gte=start_date)
-        if end_date:
-            expenses = expenses.filter(date__lte=end_date)
+            start_date = request.query_params.get("start_date")
+            end_date = request.query_params.get("end_date")
+            if start_date:
+                expenses = expenses.filter(date__gte=start_date)
+            if end_date:
+                expenses = expenses.filter(date__lte=end_date)
 
-        serializer = ExpenseSerializer(expenses, many=True)
-        return Response(serializer.data)
+            serializer = ExpenseSerializer(expenses, many=True)
+            return Response(serializer.data)
 
-    serializer = ExpenseSerializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
-    expense = serializer.save(user=request.user)
-    check_and_alert_budget(expense)
-    return Response(serializer.data, status=status.HTTP_201_CREATED)
+        serializer = ExpenseSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        expense = serializer.save(user=request.user)
+        check_and_alert_budget(expense)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    except Exception as e:
+        return Response(
+            {"error": "An error occurred while processing the expense.", "details": str(e)}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 
 
 @api_view(["GET", "PUT", "DELETE"])
@@ -131,20 +157,31 @@ def expense_detail(request, pk):
         expense = Expense.objects.get(pk=pk, user=request.user)
     except Expense.DoesNotExist:
         return Response(status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response(
+            {"error": "An error occurred while retrieving the expense.", "details": str(e)}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+    
+    try:
+        if request.method == "GET":
+            serializer = ExpenseSerializer(expense)
+            return Response(serializer.data)
 
-    if request.method == "GET":
-        serializer = ExpenseSerializer(expense)
-        return Response(serializer.data)
+        if request.method == "PUT":
+            serializer = ExpenseSerializer(expense, data=request.data)
+            serializer.is_valid(raise_exception=True)
+            expense = serializer.save()
+            check_and_alert_budget(expense)
+            return Response(serializer.data)
 
-    if request.method == "PUT":
-        serializer = ExpenseSerializer(expense, data=request.data)
-        serializer.is_valid(raise_exception=True)
-        expense = serializer.save()
-        check_and_alert_budget(expense)
-        return Response(serializer.data)
-
-    expense.delete()
-    return Response(status=status.HTTP_204_NO_CONTENT)
+        expense.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+    except Exception as e:
+        return Response(
+            {"error": "An error occurred while processing the expense.", "details": str(e)}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 
 
 def get_exchange_rates(base_currency):
@@ -154,6 +191,10 @@ def get_exchange_rates(base_currency):
         response.raise_for_status()
         data = response.json()
         return data["rates"], data["time_last_update_utc"]
+    except requests.exceptions.Timeout:
+        raise Exception("Exchange rate API request timed out.")
+    except requests.exceptions.HTTPError as http_err:
+        raise Exception(f"HTTP error occurred: {http_err}")
     except Exception as e:
         raise Exception(f"Failed to fetch exchange rates: {str(e)}")
 
@@ -226,6 +267,7 @@ def expense_export(request):
             {"error": "Failed to export expenses.", "details": str(e)}, 
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+        
 
 @api_view(["GET"])
 def expense_analytics(request):
