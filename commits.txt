@@ -1,0 +1,23 @@
+5253381 Merge pull request #9 from prasnabasnet/feature/csv-export
+3c2bac9 feature(csv-export): add CSV export endpoint for user expenses
+92d9517 Merge pull request #8 from prasnabasnet/feature/budget-alerts
+6e16946 feature(budget-alerts): add monthly budget limit and Discord alert when exceeded
+8121189 Merge pull request #7 from prasnabasnet/feature/currency-conversion
+4b724a8 feature(currency): add currency field and convert amounts to base currency in summary
+eef846f Merge pull request #6 from prasnabasnet/feature/authentication
+39294c4 feature(auth): add token authentication and user-scoped endpoints
+20e6ae8 Merge pull request #5 from prasnabasnet/fix/date-filter-inclusive
+1afe9d7 fix(expenses): use inclusive start_date filter with gte instead of gt
+eded6b5 Merge pull request #4 from prasnabasnet/fix/missing-sum-import
+52d6646 fix(expenses): add missing Sum import for summary aggregation
+ef95d04 Merge pull request #3 from prasnabasnet/fix/summary-url-routing
+f63dc8b fix(api): move summary endpoint before detail route to prevent routing conflict
+a3133a8 Merge pull request #2 from prasnabasnet/fix/views-serializer-typo
+e0a43fe fix(expenses): correct serializer variable name in expense_list view
+985671e Merge pull request #1 from prasnabasnet/fix/serializer-field-typo
+629b473 fix(api): correct serializer field mapping for category
+7b34ac4 fix: add a link for optional features
+41d85c6 docs: add integration feature specs to task brief
+8f445b2 docs: replace template README with intern task brief
+7ccfce2 chore: scaffold expense tracker API project
+9b9d474 Initial commit
